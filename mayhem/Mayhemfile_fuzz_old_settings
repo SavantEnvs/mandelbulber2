@@ -1,0 +1,9 @@
+project: savantenvs/mandelbulber2
+target: fuzz_old_settings
+testsuite:
+  - https://$MAYHEM_DOMAIN/$MAYHEM_PROJECT/$MAYHEM_TARGET/testsuite.tar
+  - file://mayhem/fuzz_old_settings/testsuite
+cmds:
+  - cmd: /mayhem/fuzz_old_settings
+    libfuzzer: true
+    timeout: 30

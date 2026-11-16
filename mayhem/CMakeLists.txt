@@ -1,0 +1,85 @@
+# Mayhem integration build: Mandelbulber's core (everything but main.cpp) as a static library,
+# plus the fuzz harnesses and the oracle test. Driven by mayhem/build.sh; upstream's own
+# mandelbulber2/cmake/CMakeLists.txt is left untouched.
+cmake_minimum_required(VERSION 3.16)
+project(mandelbulber2_mayhem C CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTOUIC ON)
+
+set(MB_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../mandelbulber2")
+set(MB_OUT "" CACHE PATH "directory receiving the harness binaries")
+set(MB_FUZZ_ENGINE "" CACHE STRING "link flags of the fuzzing engine")
+set(MB_STANDALONE_MAIN "" CACHE FILEPATH "run-once driver for the -standalone reproducers")
+set(MB_LSAN_OFF "" CACHE FILEPATH "LeakSanitizer-off hook linked into every fuzz binary")
+set(MB_BUILD_FUZZ OFF CACHE BOOL "build the fuzz harnesses")
+set(MB_BUILD_TEST OFF CACHE BOOL "build the oracle test and upstream's mandelbulber2 binary")
+
+set(CMAKE_MODULE_PATH "${MB_ROOT}/cmake/modules/")
+find_package(LZO REQUIRED)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network UiTools Test Multimedia Qml Concurrent OpenGLWidgets)
+find_package(PNG REQUIRED)
+find_package(GSL REQUIRED)
+find_package(TIFF)
+find_package(JPEG)
+find_package(ZLIB)
+find_package(OpenMP REQUIRED)
+
+file(GLOB mb_src "${MB_ROOT}/src/*.c" "${MB_ROOT}/src/*.cpp")
+list(FILTER mb_src EXCLUDE REGEX "/src/main\\.cpp$")
+file(GLOB mb_qt "${MB_ROOT}/qt/*.c" "${MB_ROOT}/qt/*.cpp")
+file(GLOB mb_formula "${MB_ROOT}/formula/definition/*.c" "${MB_ROOT}/formula/definition/*.cpp")
+file(GLOB mb_hdr "${MB_ROOT}/src/*.h" "${MB_ROOT}/src/*.hpp" "${MB_ROOT}/qt/*.h" "${MB_ROOT}/qt/*.hpp"
+  "${MB_ROOT}/formula/definition/*.h" "${MB_ROOT}/formula/definition/*.hpp")
+file(GLOB mb_ui "${MB_ROOT}/qt/*.ui")
+set(CMAKE_AUTOUIC_SEARCH_PATHS "${MB_ROOT}/qt")
+
+add_library(mbcore STATIC ${mb_src} ${mb_qt} ${mb_formula} ${mb_hdr} ${mb_ui})
+target_include_directories(mbcore PUBLIC "${MB_ROOT}" "${MB_ROOT}/qt" "${MB_ROOT}/src"
+  ${PNG_INCLUDE_DIR} ${GSL_INCLUDE_DIRS} ${LZO_INCLUDE_DIR})
+target_compile_options(mbcore PUBLIC -ffast-math)
+# upstream defaults hold 1e15 in doubles that cMultiVal::Store truncates with int(); fires on every input, before any parsing
+target_compile_options(mbcore PRIVATE -fno-sanitize=float-cast-overflow)
+target_link_libraries(mbcore PUBLIC
+  Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network Qt6::UiTools Qt6::Test Qt6::Multimedia Qt6::Qml
+  Qt6::Concurrent Qt6::OpenGLWidgets OpenMP::OpenMP_CXX ${PNG_LIBRARY} ${GSL_LIBRARIES} ${LZO_LIBRARIES})
+if(TIFF_FOUND)
+  target_include_directories(mbcore PUBLIC ${TIFF_INCLUDE_DIR})
+  target_link_libraries(mbcore PUBLIC ${TIFF_LIBRARY})
+  target_compile_definitions(mbcore PUBLIC USE_TIFF)
+endif()
+if(JPEG_FOUND)
+  target_include_directories(mbcore PUBLIC ${JPEG_INCLUDE_DIR})
+  target_link_libraries(mbcore PUBLIC ${JPEG_LIBRARY})
+endif()
+if(ZLIB_FOUND)
+  target_include_directories(mbcore PUBLIC ${ZLIB_INCLUDE_DIRS})
+  target_link_libraries(mbcore PUBLIC ${ZLIB_LIBRARIES})
+endif()
+target_compile_definitions(mbcore PUBLIC SHARED_DIR="${MB_ROOT}/deploy/share/mandelbulber2" SHARED_DOC_DIR="${MB_ROOT}/deploy/doc")
+
+if(MB_OUT)
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${MB_OUT}")
+endif()
+
+if(MB_BUILD_FUZZ)
+  add_library(mbstandalone_main OBJECT "${MB_STANDALONE_MAIN}")
+  foreach(h fuzz_settings fuzz_old_settings fuzz_png)
+    add_executable(${h} ${h}.cpp ${MB_LSAN_OFF} harness_init.cpp)
+    target_link_libraries(${h} PRIVATE mbcore)
+    target_link_options(${h} PRIVATE ${MB_FUZZ_ENGINE})
+    add_executable(${h}-standalone ${h}.cpp ${MB_LSAN_OFF} harness_init.cpp $<TARGET_OBJECTS:mbstandalone_main>)
+    target_link_libraries(${h}-standalone PRIVATE mbcore)
+  endforeach()
+endif()
+
+if(MB_BUILD_TEST)
+  add_executable(mandelbulber_oracle oracle_test.cpp harness_init.cpp)
+  target_link_libraries(mandelbulber_oracle PRIVATE mbcore)
+  # upstream's own entry point, so test.sh can run its QtTest suite (`mandelbulber2 --test`)
+  add_executable(mandelbulber2 ${MB_ROOT}/src/main.cpp)
+  target_link_libraries(mandelbulber2 PRIVATE mbcore)
+endif()
